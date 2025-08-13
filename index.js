@@ -42,47 +42,31 @@ class NaimUnitiqute2Accessory {
       .setCharacteristic(Characteristic.ConfiguredName, this.name)
       .setCharacteristic(Characteristic.SleepDiscoveryMode, Characteristic.SleepDiscoveryMode.ALWAYS_DISCOVERABLE);
 
-    // Active -> Play/Pause
+    // Active -> represents playback state; ON=Play, OFF=Pause
     this.tvService.getCharacteristic(Characteristic.Active)
-      .onSet(async (value) => {
+      .onGet(async () => {
         try {
-          const media = await this.avtGetMediaInfo(); // { currentURI }
-          const tinfo = await this.avtGetTransportInfo(); // { state }
-          const uriLoaded = !!media.currentURI;
+          const tinfo = await this.avtGetTransportInfo();
           const state = (tinfo.state || '').toUpperCase();
-
+          return (state === 'PLAYING' || state === 'TRANSITIONING')
+            ? Characteristic.Active.ACTIVE
+            : Characteristic.Active.INACTIVE;
+        } catch (e) {
+          this.log.debug('Active onGet fallback (assuming INACTIVE):', e?.message || e);
+          return Characteristic.Active.INACTIVE;
+        }
+      })
+      .onSet(async (value) => {
+        // Map directly to Play/Pause; swallow errors to avoid user-facing failures when device is unreachable
+        try {
           if (value === Characteristic.Active.ACTIVE) {
-            if (!uriLoaded) {
-              // Not a UPnP transport (Spotify/analog) or nothing queued: do nothing.
-              this.log.debug('Active ON: no UPnP CurrentURI; not sending Play.');
-              return;
-            }
-            if (state === 'PLAYING' || state === 'TRANSITIONING') {
-              this.log.debug('Active ON: already playing; no-op.');
-              return;
-            }
-            // PAUSED_PLAYBACK or STOPPED: send Play
-            try { await this.avtPlay(); } catch (e) {
-              const code = this.parseUpnpErrorCode(e);
-              this.log.debug(`Play declined (${code || 'no code'})`);
-            }
+            await this.avtPlay();
           } else {
-            if (!uriLoaded) {
-              this.log.debug('Active OFF: no UPnP CurrentURI; not sending Pause.');
-              return;
-            }
-            if (state === 'PLAYING' || state === 'TRANSITIONING') {
-              try { await this.avtPause(); } catch (e) {
-                const code = this.parseUpnpErrorCode(e);
-                this.log.debug(`Pause declined (${code || 'no code'})`);
-              }
-            } else {
-              this.log.debug('Active OFF: not playing; no-op.');
-            }
+            await this.avtPause();
           }
         } catch (e) {
-          this.log.error('Failed to set Active:', e?.message || e);
-          throw e;
+          const code = this.parseUpnpErrorCode(e);
+          this.log.debug('Active onSet Play/Pause error:', code || e?.message || e);
         }
       });
 

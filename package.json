@@ -1,16 +1,14 @@
 {
   "name": "homebridge-naim-unitiqute2",
+  "displayName": "Homebridge Naim UnitiQute 2",
   "version": "0.0.1",
   "description": "Homebridge accessory plugin for Naim UnitiQute 2 (UPnP AVTransport/RenderingControl)",
   "main": "index.js",
-  "author": {
-    "name": "Sinan Ascioglu",
-    "url": "https://github.com/msawired/Homebridge-NaimUnitiqute2"
-  },
+  "author": "msawired",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/msawired/Homebridge-NaimUnitiqute2.git"
+    "url": "git://github.com/msawired/Homebridge-NaimUnitiqute2.git"
   },
   "bugs": {
     "url": "https://github.com/msawired/Homebridge-NaimUnitiqute2/issues"
