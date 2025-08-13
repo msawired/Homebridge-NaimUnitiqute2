@@ -5,7 +5,15 @@
   "main": "index.js",
   "author": {
     "name": "Sinan Ascioglu",
-    "url": "https://your-site.com"
+    "url": "https://github.com/msawired/Homebridge-NaimUnitiqute2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/msawired/Homebridge-NaimUnitiqute2.git"
+  },
+  "bugs": {
+    "url": "https://github.com/msawired/Homebridge-NaimUnitiqute2/issues"
   },
   "keywords": [
     "homebridge-plugin",
@@ -28,13 +36,5 @@
   },
   "dependencies": {
     "axios": "^1.7.2"
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://example.com/homebridge-naim-unitiqute2.git"
-  },
-  "bugs": {
-    "url": "https://example.com/homebridge-naim-unitiqute2/issues"
   }
 }

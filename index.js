@@ -22,6 +22,9 @@ class NaimUnitiqute2Accessory {
     this.timeouts = config.timeoutMs || 5000;
     this.sources = config.sources || []; // optional: [{ name, uri, mime? }]
     this.defaultUri = config.defaultUri || null; // optional; NOT required for resume-previous-source behavior
+    // Local state cache for volume slider accessory
+    this.lastVolume = 25;
+    this.lastMuted = false;
 
     if (!this.ip) {
       this.log.warn('ipAddress not set in config. Please configure the plugin.');
@@ -43,29 +46,38 @@ class NaimUnitiqute2Accessory {
     this.tvService.getCharacteristic(Characteristic.Active)
       .onSet(async (value) => {
         try {
+          const media = await this.avtGetMediaInfo(); // { currentURI }
+          const tinfo = await this.avtGetTransportInfo(); // { state }
+          const uriLoaded = !!media.currentURI;
+          const state = (tinfo.state || '').toUpperCase();
+
           if (value === Characteristic.Active.ACTIVE) {
-            // User wants the unit to resume whatever the device already had selected.
-            // Just send Play; if there's no current transport or it refuses (e.g., 714), ignore gracefully.
-            try {
-              await this.avtPlay();
-            } catch (err) {
-              const code = this.parseUpnpErrorCode(err);
-              if (code) {
-                this.log.debug(`Play ignored due to UPnP error ${code} (no current transport or not applicable).`);
-              } else {
-                throw err;
-              }
+            if (!uriLoaded) {
+              // Not a UPnP transport (Spotify/analog) or nothing queued: do nothing.
+              this.log.debug('Active ON: no UPnP CurrentURI; not sending Play.');
+              return;
+            }
+            if (state === 'PLAYING' || state === 'TRANSITIONING') {
+              this.log.debug('Active ON: already playing; no-op.');
+              return;
+            }
+            // PAUSED_PLAYBACK or STOPPED: send Play
+            try { await this.avtPlay(); } catch (e) {
+              const code = this.parseUpnpErrorCode(e);
+              this.log.debug(`Play declined (${code || 'no code'})`);
             }
           } else {
-            try {
-              await this.avtPause();
-            } catch (err) {
-              const code = this.parseUpnpErrorCode(err);
-              if (code) {
-                this.log.debug(`Pause ignored due to UPnP error ${code}.`);
-              } else {
-                throw err;
+            if (!uriLoaded) {
+              this.log.debug('Active OFF: no UPnP CurrentURI; not sending Pause.');
+              return;
+            }
+            if (state === 'PLAYING' || state === 'TRANSITIONING') {
+              try { await this.avtPause(); } catch (e) {
+                const code = this.parseUpnpErrorCode(e);
+                this.log.debug(`Pause declined (${code || 'no code'})`);
               }
+            } else {
+              this.log.debug('Active OFF: not playing; no-op.');
             }
           }
         } catch (e) {
@@ -79,9 +91,21 @@ class NaimUnitiqute2Accessory {
       .onSet(async (value) => {
         try {
           switch (value) {
-            case Characteristic.RemoteKey.PLAY_PAUSE:
-              await this.avtPlayPause();
+            case Characteristic.RemoteKey.PLAY_PAUSE: {
+              const media = await this.avtGetMediaInfo();
+              if (!media.currentURI) {
+                this.log.debug('Remote PLAY_PAUSE: no UPnP CurrentURI; ignoring.');
+                break;
+              }
+              const tinfo = await this.avtGetTransportInfo();
+              const s = (tinfo.state || '').toUpperCase();
+              if (s === 'PLAYING' || s === 'TRANSITIONING') {
+                try { await this.avtPause(); } catch (e) { this.log.debug('Pause declined:', e?.message || e); }
+              } else {
+                try { await this.avtPlay(); } catch (e) { this.log.debug('Play declined:', e?.message || e); }
+              }
               break;
+            }
             case Characteristic.RemoteKey.ARROW_RIGHT:
             case Characteristic.RemoteKey.FAST_FORWARD:
               await this.avtNext();
@@ -105,9 +129,15 @@ class NaimUnitiqute2Accessory {
       .setCharacteristic(Characteristic.VolumeControlType, Characteristic.VolumeControlType.ABSOLUTE);
 
     this.speakerService.getCharacteristic(Characteristic.Mute)
+      .onGet(() => this.lastMuted)
       .onSet(async (value) => {
         try {
-          await this.rcSetMute(!!value);
+          const mute = !!value;
+          await this.rcSetMute(mute);
+          this.lastMuted = mute;
+          // Keep other UIs in sync
+          try { this.volumeService.updateCharacteristic(Characteristic.On, !mute); } catch {}
+          try { this.muteService && this.muteService.updateCharacteristic(Characteristic.On, mute); } catch {}
         } catch (e) {
           this.log.error('Failed to set mute:', e?.message || e);
           throw e;
@@ -127,6 +157,112 @@ class NaimUnitiqute2Accessory {
 
     this.tvService.addLinkedService(this.speakerService);
 
+    // Native Speaker service (exposes HomeKit Volume characteristic)
+    // Use a unique subtype so it can co-exist with TelevisionSpeaker (same underlying UUID)
+    this.hkSpeakerService = new Service.Speaker(this.name + ' Speaker Control', 'hk-speaker');
+    this.hkSpeakerService
+      .setCharacteristic(Characteristic.Active, Characteristic.Active.ACTIVE);
+
+    this.hkSpeakerService.getCharacteristic(Characteristic.Mute)
+      .onGet(() => this.lastMuted)
+      .onSet(async (value) => {
+        try {
+          const mute = !!value;
+          await this.rcSetMute(mute);
+          this.lastMuted = mute;
+          // Sync other controls
+          try { this.speakerService.updateCharacteristic(Characteristic.Mute, mute); } catch {}
+          try { this.volumeService.updateCharacteristic(Characteristic.On, !mute); } catch {}
+          try { this.muteService && this.muteService.updateCharacteristic(Characteristic.On, mute); } catch {}
+        } catch (e) {
+          this.log.error('Failed to set mute (HK Speaker):', e?.message || e);
+          throw e;
+        }
+      });
+
+    this.hkSpeakerService
+      .addCharacteristic(Characteristic.Volume)
+      .onGet(() => this.lastVolume)
+      .onSet(async (value) => {
+        try {
+          const vol = Math.max(0, Math.min(100, Number(value)));
+          await this.rcSetVolume(vol);
+          this.lastVolume = vol;
+          if (vol > 0 && this.lastMuted) {
+            await this.rcSetMute(false);
+            this.lastMuted = false;
+            // Sync across controls
+            try { this.speakerService.updateCharacteristic(Characteristic.Mute, false); } catch {}
+            try { this.volumeService.updateCharacteristic(Characteristic.On, true); } catch {}
+            try { this.muteService && this.muteService.updateCharacteristic(Characteristic.On, false); } catch {}
+          }
+        } catch (e) {
+          this.log.error('Failed to set volume (HK Speaker):', e?.message || e);
+          throw e;
+        }
+      });
+
+    // Separate Volume Slider (Lightbulb) for quick access in Home app
+    // On -> not muted, Off -> muted; Brightness 0-100 -> volume level
+    this.volumeService = new Service.Lightbulb(this.name + ' Volume');
+    this.volumeService
+      .getCharacteristic(Characteristic.On)
+      .onGet(() => !this.lastMuted)
+      .onSet(async (value) => {
+        try {
+          const mute = !value;
+          await this.rcSetMute(mute);
+          this.lastMuted = mute;
+          // Sync speaker and mute switch
+          try { this.speakerService.updateCharacteristic(Characteristic.Mute, mute); } catch {}
+          try { this.muteService && this.muteService.updateCharacteristic(Characteristic.On, mute); } catch {}
+        } catch (e) {
+          this.log.error('Failed to set mute (Volume slider On):', e?.message || e);
+          throw e;
+        }
+      });
+
+    this.volumeService
+      .addCharacteristic(Characteristic.Brightness)
+      .onGet(() => this.lastVolume)
+      .onSet(async (value) => {
+        try {
+          const vol = Math.max(0, Math.min(100, Number(value)));
+          await this.rcSetVolume(vol);
+          this.lastVolume = vol;
+          if (vol > 0 && this.lastMuted) {
+            // Unmute when setting a non-zero volume for better UX
+            await this.rcSetMute(false);
+            this.lastMuted = false;
+            this.volumeService.updateCharacteristic(Characteristic.On, true);
+            try { this.speakerService.updateCharacteristic(Characteristic.Mute, false); } catch {}
+            try { this.muteService && this.muteService.updateCharacteristic(Characteristic.On, false); } catch {}
+          }
+        } catch (e) {
+          this.log.error('Failed to set volume (Volume slider Brightness):', e?.message || e);
+          throw e;
+        }
+      });
+
+    // Separate Mute Toggle (Switch): On=true means Muted
+    this.muteService = new Service.Switch(this.name + ' Mute');
+    this.muteService
+      .getCharacteristic(Characteristic.On)
+      .onGet(() => this.lastMuted)
+      .onSet(async (value) => {
+        try {
+          const mute = !!value;
+          await this.rcSetMute(mute);
+          this.lastMuted = mute;
+          // Sync other controls
+          try { this.speakerService.updateCharacteristic(Characteristic.Mute, mute); } catch {}
+          try { this.volumeService.updateCharacteristic(Characteristic.On, !mute); } catch {}
+        } catch (e) {
+          this.log.error('Failed to set mute (Mute switch):', e?.message || e);
+          throw e;
+        }
+      });
+
     // Optional Inputs (requires URIs configured)
     this.inputSources = [];
     this.sources.forEach((src, index) => {
@@ -135,7 +271,9 @@ class NaimUnitiqute2Accessory {
         .setCharacteristic(Characteristic.Identifier, index)
         .setCharacteristic(Characteristic.ConfiguredName, src.name)
         .setCharacteristic(Characteristic.IsConfigured, Characteristic.IsConfigured.CONFIGURED)
-        .setCharacteristic(Characteristic.InputSourceType, Characteristic.InputSourceType.OTHER);
+        .setCharacteristic(Characteristic.InputSourceType, Characteristic.InputSourceType.OTHER)
+        .setCharacteristic(Characteristic.CurrentVisibilityState, Characteristic.CurrentVisibilityState.SHOWN)
+        .setCharacteristic(Characteristic.TargetVisibilityState, Characteristic.TargetVisibilityState.SHOWN);
 
       this.tvService.addLinkedService(input);
       // Expose input as its own service on the accessory rather than adding to tvService
@@ -143,7 +281,24 @@ class NaimUnitiqute2Accessory {
     });
 
     if (this.inputSources.length > 0) {
+      // Initialize to the first source until we can resolve the current one
+      try {
+        this.tvService.updateCharacteristic(Characteristic.ActiveIdentifier, 0);
+      } catch {}
+
       this.tvService.getCharacteristic(Characteristic.ActiveIdentifier)
+        .onGet(async () => {
+          try {
+            const media = await this.avtGetMediaInfo();
+            const idx = this.inputSources.findIndex(s => s.uri && s.uri === media.currentURI);
+            if (idx >= 0) {
+              return this.inputSources[idx].service.getCharacteristic(Characteristic.Identifier).value;
+            }
+          } catch (e) {
+            this.log.debug('ActiveIdentifier onGet fallback:', e?.message || e);
+          }
+          return 0;
+        })
         .onSet(async (identifier) => {
           const src = this.inputSources.find(s => s.service.getCharacteristic(Characteristic.Identifier).value === identifier);
           if (!src) return;
@@ -157,7 +312,15 @@ class NaimUnitiqute2Accessory {
     }
 
     // Expose services
-    this.services = [this.informationService, this.tvService, this.speakerService, ...this.inputSources.map(s => s.service)];
+    this.services = [
+      this.informationService,
+      this.tvService,
+      this.speakerService,
+      this.hkSpeakerService,
+      this.muteService,
+      this.volumeService,
+      ...this.inputSources.map(s => s.service)
+    ];
   }
 
   getServices() {
@@ -181,7 +344,10 @@ class NaimUnitiqute2Accessory {
     const res = await axios.post(url, envelope, {
       headers: {
         'Content-Type': 'text/xml; charset="utf-8"',
-        'SOAPAction': `${serviceType}#${action}`,
+        // Some renderers require SOAPAction to be quoted exactly like the UPnP spec examples
+        'SOAPAction': `"${serviceType}#${action}"`,
+        // Some buggy stacks only look for uppercase SOAPACTION
+        'SOAPACTION': `"${serviceType}#${action}"`,
         'Connection': 'close',
       },
       timeout: this.timeouts,
@@ -306,12 +472,21 @@ class NaimUnitiqute2Accessory {
   }
 
   async avtPlayPause() {
-    // Try Pause, if fails, Play
     try {
-      await this.avtPause();
+      const media = await this.avtGetMediaInfo();
+      if (!media.currentURI) {
+        this.log.debug('avtPlayPause: no UPnP CurrentURI; ignoring.');
+        return;
+      }
+      const tinfo = await this.avtGetTransportInfo();
+      const s = (tinfo.state || '').toUpperCase();
+      if (s === 'PLAYING' || s === 'TRANSITIONING') {
+        await this.avtPause();
+      } else {
+        await this.avtPlay();
+      }
     } catch (e) {
-      this.log.debug('Pause failed, trying Play');
-      await this.avtPlay();
+      this.log.debug('avtPlayPause failed:', e?.message || e);
     }
   }
 
