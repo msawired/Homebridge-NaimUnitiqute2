@@ -1,4 +1,6 @@
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
 const pkg = require('./package.json');
 
 let Service, Characteristic, UUIDGen, Categories;
@@ -392,6 +394,9 @@ class NaimUnitiqute2Accessory {
     return this.services;
   }
 
+  // Small helper
+  sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
   // ===== SOAP helpers =====
   async soapRequest(path, serviceType, action, innerXml) {
     if (!this.ip) throw new Error('ipAddress is not configured.');
@@ -478,9 +483,27 @@ class NaimUnitiqute2Accessory {
     const path = '/RenderingControl/ctrl';
     const st = 'urn:schemas-upnp-org:service:RenderingControl:1';
     const action = 'GetVolume';
-    const res = await axios.post(`${this.baseUrl}${path}`,
-      `<?xml version="1.0" encoding="utf-8"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="${st}">${inner}</u:${action}></s:Body></s:Envelope>`,
-      { headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': `"${st}#${action}"`, 'SOAPACTION': `"${st}#${action}"`, 'Connection': 'close' }, timeout: this.timeouts, validateStatus: () => true });
+    const bodyXml = `<?xml version="1.0" encoding="utf-8"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="${st}">${inner}</u:${action}></s:Body></s:Envelope>`;
+    const reqOpts = {
+      headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': `"${st}#${action}"`, 'SOAPACTION': `"${st}#${action}"`, 'Connection': 'close' },
+      timeout: this.timeouts,
+      validateStatus: () => true,
+      httpAgent: new http.Agent({ keepAlive: false, maxSockets: 1 }),
+      httpsAgent: new https.Agent({ keepAlive: false, maxSockets: 1 }),
+    };
+    const doPost = () => axios.post(`${this.baseUrl}${path}`, bodyXml, reqOpts);
+    let res;
+    try {
+      res = await doPost();
+    } catch (e) {
+      if (e?.code === 'ECONNRESET' || (typeof e?.message === 'string' && e.message.includes('socket hang up'))) {
+        this.log.debug(`${this.name}: rcGetVolume retry after transient socket error`);
+        await this.sleep(150);
+        res = await doPost();
+      } else {
+        throw e;
+      }
+    }
     if (res.status < 200 || res.status >= 300 || typeof res.data !== 'string') {
       this.log.debug(`${this.name}: rcGetVolume HTTP ${res.status}`, typeof res.data === 'string' ? res.data.slice(0, 200) : '');
       throw new Error(`HTTP ${res.status}`);
