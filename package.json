@@ -1,0 +1,40 @@
+{
+  "name": "homebridge-naim-unitiqute2",
+  "version": "0.0.1",
+  "description": "Homebridge accessory plugin for Naim UnitiQute 2 (UPnP AVTransport/RenderingControl)",
+  "main": "index.js",
+  "author": {
+    "name": "Sinan Ascioglu",
+    "url": "https://your-site.com"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "naim",
+    "unitiqute",
+    "upnp",
+    "dlna"
+  ],
+  "engines": {
+    "node": ">=16.0.0",
+    "homebridge": ">=1.6.0"
+  },
+  "homebridge": {
+    "accessories": [
+      "NaimUnitiqute2"
+    ]
+  },
+  "scripts": {
+    "test": "echo \"No tests\""
+  },
+  "dependencies": {
+    "axios": "^1.7.2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://example.com/homebridge-naim-unitiqute2.git"
+  },
+  "bugs": {
+    "url": "https://example.com/homebridge-naim-unitiqute2/issues"
+  }
+}

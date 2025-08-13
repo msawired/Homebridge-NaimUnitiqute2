@@ -1,0 +1,78 @@
+{
+  "pluginAlias": "NaimUnitiqute2",
+  "pluginType": "accessory",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Naim UnitiQute 2"
+      },
+      "ipAddress": {
+        "title": "Device IP Address",
+        "type": "string",
+        "required": true,
+        "placeholder": "192.168.1.XXX"
+      },
+      "port": {
+        "title": "UPnP Port",
+        "type": "number",
+        "default": 8080
+      },
+      "timeoutMs": {
+        "title": "HTTP Timeout (ms)",
+        "type": "number",
+        "default": 5000
+      },
+      "defaultUri": {
+        "title": "Default Transport URI (optional)",
+        "type": "string",
+        "placeholder": "http://example.com/stream.mp3",
+        "description": "If set, the plugin will call SetAVTransportURI with this URI before Play. Prevents UPnP 714 errors."
+      },
+      "sources": {
+        "title": "Sources (optional)",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Source Name",
+              "type": "string"
+            },
+            "uri": {
+              "title": "UPnP URI (e.g. preset or stream URI)",
+              "type": "string"
+            }
+          },
+          "required": ["name", "uri"]
+        }
+      }
+    },
+    "required": ["ipAddress"]
+  },
+  "layout": [
+    {
+      "type": "fieldset",
+      "title": "Device",
+      "items": [
+        "name",
+        "ipAddress",
+        "port",
+        "timeoutMs",
+        "defaultUri"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Sources",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "sources"
+      ]
+    }
+  ]
+}
