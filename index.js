@@ -108,6 +108,8 @@ class NaimUnitiqute2Accessory {
 
     // Television Speaker for volume and mute
     this.speakerService = new Service.TelevisionSpeaker(this.name + ' Speaker');
+    // Clarify speaker control name in UI
+    try { this.speakerService.setCharacteristic(Characteristic.Name, this.name + ' TV Speaker'); } catch {}
     this.speakerService
       .setCharacteristic(Characteristic.Active, Characteristic.Active.ACTIVE)
       .setCharacteristic(Characteristic.VolumeControlType, Characteristic.VolumeControlType.ABSOLUTE);
@@ -144,6 +146,7 @@ class NaimUnitiqute2Accessory {
     // Native Speaker service (exposes HomeKit Volume characteristic)
     // Use a unique subtype so it can co-exist with TelevisionSpeaker (same underlying UUID)
     this.hkSpeakerService = new Service.Speaker(this.name + ' Speaker Control', 'hk-speaker');
+    try { this.hkSpeakerService.setCharacteristic(Characteristic.Name, 'Volume'); } catch {}
     this.hkSpeakerService
       .setCharacteristic(Characteristic.Active, Characteristic.Active.ACTIVE);
 
@@ -189,6 +192,7 @@ class NaimUnitiqute2Accessory {
     // Separate Volume Slider (Lightbulb) for quick access in Home app
     // On -> not muted, Off -> muted; Brightness 0-100 -> volume level
     this.volumeService = new Service.Lightbulb(this.name + ' Volume');
+    try { this.volumeService.setCharacteristic(Characteristic.Name, 'Volume'); } catch {}
     this.volumeService
       .getCharacteristic(Characteristic.On)
       .onGet(() => !this.lastMuted)
@@ -230,6 +234,7 @@ class NaimUnitiqute2Accessory {
 
     // Separate Mute Toggle (Switch): On=true means Muted
     this.muteService = new Service.Switch(this.name + ' Mute');
+    try { this.muteService.setCharacteristic(Characteristic.Name, 'Mute'); } catch {}
     this.muteService
       .getCharacteristic(Characteristic.On)
       .onGet(() => this.lastMuted)
