@@ -1,4 +1,5 @@
 const axios = require('axios');
+const pkg = require('./package.json');
 
 let Service, Characteristic, UUIDGen, Categories;
 
@@ -25,6 +26,9 @@ class NaimUnitiqute2Accessory {
     // Local state cache for volume slider accessory
     this.lastVolume = 25;
     this.lastMuted = false;
+    this._lastActiveReported = null; // Characteristic.Active last value we pushed
+
+    this.log.info(`${this.name}: Homebridge Naim UnitiQute 2 plugin v${pkg.version} initializing...`);
 
     if (!this.ip) {
       this.log.warn('ipAddress not set in config. Please configure the plugin.');
@@ -310,6 +314,78 @@ class NaimUnitiqute2Accessory {
       this.volumeService,
       ...this.inputSources.map(s => s.service)
     ];
+
+    // ===== Polling to sync state from device =====
+    this.pollIntervalMs = Number(config.pollMs || 5000);
+    if (this.pollIntervalMs > 0) {
+      this.log.info(`${this.name}: polling enabled every ${this.pollIntervalMs} ms`);
+      const poll = async () => {
+        try {
+          this.log.debug(`${this.name}: poll tick`);
+          // Playback state -> Television.Active
+          try {
+            const tinfo = await this.avtGetTransportInfo();
+            const state = (tinfo.state || '').toUpperCase();
+            this.log.debug(`${this.name}: poll TransportState -> ${state || 'UNKNOWN'}`);
+            const active = (state === 'PLAYING' || state === 'TRANSITIONING')
+              ? Characteristic.Active.ACTIVE
+              : Characteristic.Active.INACTIVE;
+            if (this._lastActiveReported !== active) {
+              this._lastActiveReported = active;
+              this.tvService.updateCharacteristic(Characteristic.Active, active);
+              this.log.debug(`${this.name}: poll Active -> ${active === Characteristic.Active.ACTIVE ? 'ON (playing)' : 'OFF'}`);
+            }
+          } catch (e) {
+            // Ignore intermittent errors during polling
+            this.log.debug(`${this.name}: poll Active error:`, e?.message || e);
+          }
+
+          // Volume
+          try {
+            const vol = await this.rcGetVolume();
+            if (typeof vol === 'number' && !Number.isNaN(vol)) {
+              this.log.debug(`${this.name}: poll Volume (fetched) -> ${vol}`);
+              if (this.lastVolume !== vol) {
+                this.lastVolume = vol;
+                try { this.speakerService.updateCharacteristic(Characteristic.Volume, vol); } catch {}
+                try { this.hkSpeakerService.updateCharacteristic(Characteristic.Volume, vol); } catch {}
+                try { this.volumeService.updateCharacteristic(Characteristic.Brightness, vol); } catch {}
+                this.log.debug(`${this.name}: poll Volume -> ${vol}`);
+              }
+            }
+          } catch (e) {
+            this.log.debug(`${this.name}: poll Volume error:`, e?.message || e);
+          }
+
+          // Mute
+          try {
+            const mute = await this.rcGetMute();
+            if (typeof mute === 'boolean') {
+              this.log.debug(`${this.name}: poll Mute (fetched) -> ${mute}`);
+              if (this.lastMuted !== mute) {
+                this.lastMuted = mute;
+                try { this.speakerService.updateCharacteristic(Characteristic.Mute, mute); } catch {}
+                try { this.hkSpeakerService.updateCharacteristic(Characteristic.Mute, mute); } catch {}
+                try { this.muteService.updateCharacteristic(Characteristic.On, mute); } catch {}
+                try { this.volumeService.updateCharacteristic(Characteristic.On, !mute); } catch {}
+                this.log.debug(`${this.name}: poll Mute -> ${mute}`);
+              }
+            }
+          } catch {}
+        } catch {}
+      };
+      this.pollTimer = setInterval(poll, this.pollIntervalMs);
+      // Prime initial poll shortly after start
+      setTimeout(poll, 500);
+      // Clear on shutdown
+      try {
+        this.api.on('shutdown', () => {
+          try { clearInterval(this.pollTimer); } catch {}
+        });
+      } catch {}
+    } else {
+      this.log.info(`${this.name}: polling disabled (pollMs=${this.pollIntervalMs})`);
+    }
   }
 
   getServices() {
@@ -364,7 +440,7 @@ class NaimUnitiqute2Accessory {
     const action = 'GetTransportInfo';
     const res = await axios.post(`${this.baseUrl}${path}`,
       `<?xml version="1.0" encoding="utf-8"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="${st}">${inner}</u:${action}></s:Body></s:Envelope>`,
-      { headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': `${st}#${action}`, 'Connection': 'close' }, timeout: this.timeouts, validateStatus: () => true });
+      { headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': `"${st}#${action}"`, 'SOAPACTION': `"${st}#${action}"`, 'Connection': 'close' }, timeout: this.timeouts, validateStatus: () => true });
     if (res.status < 200 || res.status >= 300 || typeof res.data !== 'string') return {};
     const body = res.data;
     const m = body.match(/<CurrentTransportState>([^<]*)<\/CurrentTransportState>/i);
@@ -395,6 +471,48 @@ class NaimUnitiqute2Accessory {
   async rcSetMute(mute) {
     const inner = `\n<InstanceID>0</InstanceID>\n<Channel>Master</Channel>\n<DesiredMute>${mute ? 1 : 0}</DesiredMute>\n`;
     await this.soapRequest('/RenderingControl/ctrl', 'urn:schemas-upnp-org:service:RenderingControl:1', 'SetMute', inner);
+  }
+
+  async rcGetVolume() {
+    const inner = `\n<InstanceID>0</InstanceID>\n<Channel>Master</Channel>\n`;
+    const path = '/RenderingControl/ctrl';
+    const st = 'urn:schemas-upnp-org:service:RenderingControl:1';
+    const action = 'GetVolume';
+    const res = await axios.post(`${this.baseUrl}${path}`,
+      `<?xml version="1.0" encoding="utf-8"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="${st}">${inner}</u:${action}></s:Body></s:Envelope>`,
+      { headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': `"${st}#${action}"`, 'SOAPACTION': `"${st}#${action}"`, 'Connection': 'close' }, timeout: this.timeouts, validateStatus: () => true });
+    if (res.status < 200 || res.status >= 300 || typeof res.data !== 'string') {
+      this.log.debug(`${this.name}: rcGetVolume HTTP ${res.status}`, typeof res.data === 'string' ? res.data.slice(0, 200) : '');
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const body = res.data;
+    const m = body.match(/<CurrentVolume>(\d+)<\/CurrentVolume>/i);
+    if (!m) {
+      this.log.debug(`${this.name}: rcGetVolume parse miss`, body.slice(0, 200));
+      return undefined;
+    }
+    return Math.max(0, Math.min(100, parseInt(m[1], 10)));
+  }
+
+  async rcGetMute() {
+    const inner = `\n<InstanceID>0</InstanceID>\n<Channel>Master</Channel>\n`;
+    const path = '/RenderingControl/ctrl';
+    const st = 'urn:schemas-upnp-org:service:RenderingControl:1';
+    const action = 'GetMute';
+    const res = await axios.post(`${this.baseUrl}${path}`,
+      `<?xml version="1.0" encoding="utf-8"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="${st}">${inner}</u:${action}></s:Body></s:Envelope>`,
+      { headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'SOAPAction': `"${st}#${action}"`, 'SOAPACTION': `"${st}#${action}"`, 'Connection': 'close' }, timeout: this.timeouts, validateStatus: () => true });
+    if (res.status < 200 || res.status >= 300 || typeof res.data !== 'string') {
+      this.log.debug(`${this.name}: rcGetMute HTTP ${res.status}`, typeof res.data === 'string' ? res.data.slice(0, 200) : '');
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const body = res.data;
+    const m = body.match(/<CurrentMute>(\d+)<\/CurrentMute>/i);
+    if (!m) {
+      this.log.debug(`${this.name}: rcGetMute parse miss`, body.slice(0, 200));
+      return undefined;
+    }
+    return parseInt(m[1], 10) === 1;
   }
 
   // ===== Helpers for metadata (UPnP 714 fix) =====
